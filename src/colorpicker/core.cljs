@@ -28,8 +28,8 @@
     :saturation (format-hsl (/ (* 360 i) steps) fixed-value (/ (* 100 j) steps))
     :lightness (format-hsl (/ (* 360 i) steps) (/ (* 100 j) steps) fixed-value)))
 
-(defn render-plane []
-  (let [canvas (js/document.getElementById "c")
+(defn render-background []
+  (let [canvas (js/document.getElementById "background")
         ctx (.getContext canvas "2d")
         bounds (.getBoundingClientRect canvas)
         width (.-width bounds)
@@ -44,9 +44,51 @@
         (aset ctx "fillStyle" color)
         (.fillRect ctx (round x) (round y) (round (+ x (/ width steps))) (round (+ y (/ height steps))))))))
 
+(defn position [[h s l] fixed-dimension]
+  (case fixed-dimension
+    :hue [(/ s 100) (/ l 100)]
+    :saturation [(/ h 360) (/ l 100)]
+    :lightness [(/ h 360) (/ s 100)]))
+
+(defn render-foreground []
+  (let [s @global-state
+        canvas (js/document.getElementById "foreground")
+        bounds (.getBoundingClientRect canvas)
+        width (.-width bounds)
+        height (.-height bounds)
+        color ((:colors s) (:current s))
+        pos-pct (position color (:fixed-dimension s))
+        pos [(+ 0.5 (round (* width (first pos-pct))))
+             (+ 0.5 (round (* height (second pos-pct))))]
+        s-x (fn [p d] [(+ (first p) d) (second p)])
+        s-y (fn [p d] [(first p) (+ (second p) d)])
+        north (s-y pos -10)
+        south (s-y pos +10)
+        west (s-x pos -10)
+        east (s-x pos +10)
+        ctx (.getContext canvas "2d")
+        line (fn [[x-1 y-1] [x-2 y-2]]
+               (.beginPath ctx)
+               (.moveTo ctx x-1 y-1)
+               (.lineTo ctx x-2 y-2)
+               (.stroke ctx))]
+    (.clearRect ctx 0 0 width height)
+    (aset ctx "strokeStyle" "white")
+    (line (s-x north -1) (s-x south -1))
+    (line (s-x north +1) (s-x south +1))
+    (line (s-y west -1) (s-y east -1))
+    (line (s-y west +1) (s-y east +1))
+    (aset ctx "strokeStyle" "black")
+    (line north south)
+    (line west east)))
+
+(defn render-canvas []
+  (render-background)
+  (render-foreground))
+
 (defn fix-dimension [dimension]
   (swap! global-state assoc :fixed-dimension dimension)
-  (render-plane))
+  (render-canvas))
 
 (defn updated-color [[h s l] fixed-dimension x-pct y-pct]
   (case fixed-dimension
@@ -66,7 +108,8 @@
         y-pct (/ y height)
         s @global-state
         current (:current s)]
-    (swap! global-state assoc-in [:colors current] (updated-color ((:colors s) current) (:fixed-dimension s) x-pct y-pct))))
+    (swap! global-state assoc-in [:colors current] (updated-color ((:colors s) current) (:fixed-dimension s) x-pct y-pct))
+    (render-foreground)))
 
 (defn add-color [s c]
   (let [current (count (:colors s))]
@@ -88,17 +131,45 @@
 (defn handle-select [index e]
   (.stopPropagation e)
   (swap! global-state select-current index)
-  (render-plane))
+  (render-canvas))
 
 (defn handle-add []
   (let [c [(round (* 360 (.random js/Math))) 50 50]]
     (swap! global-state add-color c)
-    (render-plane)))
+    (render-canvas)))
 
 (defn handle-delete [i e]
   (.stopPropagation e)
   (swap! global-state remove-color i)
-  (render-plane))
+  (render-canvas))
+
+(defn handle-export []
+  (swap! global-state update :export? not))
+
+(defn matrix [colors]
+  (let [n (count colors)]
+    [:div.matrix
+     (for [i (range n)
+           j (range n)]
+       [:div {:key (str i \- j)
+              :class "swatch"
+              :on-click (partial handle-select i)
+              :style {:grid-row (inc i)
+                      :grid-column (inc j)
+                      :background-color (apply format-hsl (colors i))
+                      :color (apply format-hsl (colors j))
+                      :border-color (apply format-hsl (colors j))}}
+        [:span {:on-click (partial handle-select j)} "Text"]])]))
+
+(defn export [colors]
+  [:div.export
+   [:pre (str
+           ":root {\n"
+           "  /* use these colors with var(--color-1) etc. */\n"
+           (apply str (for [[c i] (map vector colors (range))]
+                        (str "  --color-" (inc i) ": " (apply format-hsl c) ";\n")))
+           "}\n")]
+   [:button {:on-click handle-export} "Back"]])
 
 (defn root []
   (let [s @global-state
@@ -113,7 +184,9 @@
                 :disabled (= fixed-dimension :saturation)} "HL"]
       [:button {:on-click #(fix-dimension :hue)
                 :disabled (= fixed-dimension :hue)} "SL"]
-      [:div [:canvas#c {:width 256 :height 256 :on-click pick}]]
+      [:div#canvas
+       [:canvas#background {:width 256 :height 256}]
+       [:canvas#foreground {:width 256 :height 256 :on-click pick}]]
       [:ul.colors
        (for [i (range n)]
          [:li
@@ -123,23 +196,15 @@
            (apply format-hsl (colors i))]
           (when (> n 1) [:span.delete {:on-click (partial handle-delete i)} "✖"])])
        (when (< n 5)
-         [:li.add {:on-click handle-add} "Add color"])]]
-     [:div.matrix
-      (for [i (range n)
-            j (range n)]
-        [:div {:key (str i \- j)
-               :class "swatch"
-               :on-click (partial handle-select i)
-               :style {:grid-row (inc i)
-                       :grid-column (inc j)
-                       :background-color (apply format-hsl (colors i))
-                       :color (apply format-hsl (colors j))
-                       :border-color (apply format-hsl (colors j))}}
-         [:span {:on-click (partial handle-select j)} "Text"]])]]))
+         [:li.add {:on-click handle-add} "Add color"])
+       [:li.add {:on-click handle-export} "Export"]]]
+     (if (:export? s)
+       (export colors)
+       (matrix colors))]))
 
 (defn ^:export run []
   (rdom/render [root] (js/document.getElementById "app"))
   (when (empty? (:colors @global-state)) (handle-add))
-  (render-plane))
+  (render-canvas))
 
 (run)
