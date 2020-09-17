@@ -1,5 +1,6 @@
 (ns ^:figwheel-hooks colorpicker.core
-  (:require [reagent.core :as r]
+  (:require [clojure.string :as cs]
+            [reagent.core :as r]
             [reagent.dom :as rdom]
             [goog.string :as gstring]
             [goog.string.format]))
@@ -21,6 +22,18 @@
 
 (defn format-hsl [h s l]
   (gstring/format "hsl(%d, %f%%, %f%%)" h s l))
+
+(defn format-url-fragment [colors]
+  (str \# (cs/join \, (flatten colors))))
+
+(defn parse-url-fragment [fragment]
+  (when (seq fragment)
+    (as-> fragment x
+      (subs x 1)
+      (cs/split x \,)
+      (map int x)
+      (partition 3 3 [0 0] x)
+      (mapv vec x))))
 
 (defn format-color [i j steps [fixed-dimension fixed-value]]
   (case fixed-dimension
@@ -161,10 +174,11 @@
                       :border-color (apply format-hsl (colors j))}}
         [:span {:on-click (partial handle-select j)} "Text"]])]))
 
-(defn export [colors]
+(defn export [url colors]
   [:div.export
    [:pre (str
            ":root {\n"
+           "  /* view/edit at " url (format-url-fragment colors) " */\n"
            "  /* use these colors with var(--color-1) etc. */\n"
            (apply str (for [[c i] (map vector colors (range))]
                         (str "  --color-" (inc i) ": " (apply format-hsl c) ";\n")))
@@ -175,7 +189,8 @@
   (let [s @global-state
         colors (:colors s)
         n (count colors)
-        fixed-dimension (:fixed-dimension s)]
+        fixed-dimension (:fixed-dimension s)
+        url js/window.location.href]
     [:div.container
      [:div
       [:button {:on-click #(fix-dimension :lightness)
@@ -199,10 +214,13 @@
          [:li.add {:on-click handle-add} "Add color"])
        [:li.add {:on-click handle-export} "Export"]]]
      (if (:export? s)
-       (export colors)
+       (export url colors)
        (matrix colors))]))
 
 (defn ^:export run []
+  (when-let [colors (parse-url-fragment js/window.location.hash)]
+    (swap! global-state assoc :colors colors :current 0))
+  (js/history.replaceState nil nil " ") ; clear URL fragment
   (rdom/render [root] (js/document.getElementById "app"))
   (when (empty? (:colors @global-state)) (handle-add))
   (render-canvas))
